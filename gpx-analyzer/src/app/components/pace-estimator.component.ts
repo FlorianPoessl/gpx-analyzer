@@ -21,23 +21,48 @@ import { TrackPoint } from '../services/gpx.service';
         </div>
       </div>
 
+      <div class="controls">
+        <label>Uphill sensitivity:</label>
+        <select [(ngModel)]="sensitivity">
+          <option *ngFor="let l of levels" [value]="l.id">{{ l.name }}</option>
+        </select>
+        <div class="level-desc">{{ levels[sensitivity]?.name }}</div>
+      </div>
+
+      <div class="controls">
+        <label>Flat pace (per km):</label>
+        <input type="text" placeholder="mm:ss" [(ngModel)]="flatPace" />
+        <div class="level-desc">Enter pace you'd run on flat terrain (e.g. 06:30). If both this and target time are set, target time is used.</div>
+      </div>
+
       <div *ngIf="!points || points.length===0" class="empty">Open a GPX file to estimate pace.</div>
 
       <div *ngIf="results && results.length">
-        <table class="results">
-          <thead>
-            <tr><th>Km</th><th>Distance</th><th>Elevation Δ (m)</th><th>Pace</th></tr>
-          </thead>
-          <tbody>
-            <tr *ngFor="let r of results; let i = index">
-              <td>{{ i+1 }}</td>
-              <td>{{ r.distance.toFixed(2) }} km</td>
-              <td [class.up]="r.elevDelta>0" [class.down]="r.elevDelta<0">{{ r.elevDelta.toFixed(1) }}</td>
-              <td>{{ formatSeconds(r.paceSeconds) }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+          <table class="results">
+            <thead>
+              <tr><th>Km</th><th>Distance</th><th>Elevation Δ (m)</th><th>Pace</th></tr>
+            </thead>
+            <tbody>
+              <tr *ngFor="let r of results; let i = index">
+                <td>{{ i+1 }}</td>
+                <td>{{ r.distance.toFixed(2) }} km</td>
+                <td [class.up]="r.elevDelta>0" [class.down]="r.elevDelta<0">{{ r.elevDelta.toFixed(1) }}</td>
+                <td>
+                  <span *ngIf="r.isPartial">{{ formatSeconds(r.timeSeconds) }} <small>(for {{ (r.distance*1000)|number:'1.0-0' }} m)</small></span>
+                  <span *ngIf="!r.isPartial">{{ formatSeconds(r.paceSeconds) }}</span>
+                </td>
+              </tr>
+            </tbody>
+            <tfoot *ngIf="results && results.length">
+              <tr>
+                <td colspan="1"><strong>Total</strong></td>
+                <td><strong>{{ totalDistanceKm.toFixed(2) }} km</strong></td>
+                <td></td>
+                <td><strong>{{ formatSeconds(totalTimeSeconds) }}</strong></td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
     </div>
   `,
   styles: [
@@ -45,12 +70,14 @@ import { TrackPoint } from '../services/gpx.service';
     :host{ display:block }
     .pace-root{ display:flex; flex-direction:column; gap:8px }
     .controls{ display:flex; align-items:center; gap:8px }
+    .controls select{ padding:6px; border-radius:6px; border:1px solid #ddd }
+    .level-desc{ margin-left:8px; color:#444; font-size:0.9rem }
     .time-inputs{ display:flex; align-items:center; gap:6px }
     input[type=number]{ width:56px; padding:6px; border-radius:6px; border:1px solid #ddd }
     .results{ width:100%; border-collapse:collapse }
     .results th, .results td{ text-align:left; padding:6px 8px; border-bottom:1px solid #eee }
     .results td.up{ color:#b22222 }
-    .results td.down{ color:#6a0dad }
+    .results td.down{ color:#2e8b57 }
     .empty{ color:#666; font-style:italic }
     `
   ]
@@ -61,8 +88,22 @@ export class PaceEstimatorComponent {
   hours = 0;
   minutes = 0;
   seconds = 0;
+  // flat pace input (e.g. "06:30") representing mm:ss per km on flat
+  flatPace = '';
 
-  results: Array<{ distance: number; elevDelta: number; paceSeconds: number }> | null = null;
+  // sensitivity presets for how much elevation affects pace
+  sensitivity = 2; // default index
+  levels = [
+    { id: 0, name: 'Absolute Pro (unchanged uphill)', factor: 0.05 },
+    { id: 1, name: 'Strong Climber', factor: 0.12 },
+    { id: 2, name: 'Balanced', factor: 0.2 },
+    { id: 3, name: 'Cautious Climber', factor: 0.4 },
+    { id: 4, name: "I'd rather walk the steeper uphills", factor: 0.8 }
+  ];
+
+  results: Array<{ distance: number; elevDelta: number; paceSeconds: number; isPartial: boolean; timeSeconds: number }> | null = null;
+  totalTimeSeconds = 0;
+  totalDistanceKm = 0;
 
   estimate() {
     if (!this.points || this.points.length === 0) {
@@ -77,69 +118,96 @@ export class PaceEstimatorComponent {
     const totalMeters = last.cumDist ?? 0;
     const totalKm = Math.max(0.001, totalMeters / 1000);
 
-    const basePaceSeconds = totalSeconds / totalKm; // seconds per km
+    // determine base pace: prefer target finish time if configured, otherwise use flat pace input
+    const hasTargetTime = (this.hours || 0) + (this.minutes || 0) + (this.seconds || 0) > 0;
+    const parsedFlatPace = this.parsePace(this.flatPace);
 
-    // generate per-km segments (include last partial)
+    let basePaceSeconds: number;
+    if (hasTargetTime) {
+      basePaceSeconds = totalSeconds / totalKm; // seconds per km computed from target time
+    } else if (parsedFlatPace) {
+      basePaceSeconds = parsedFlatPace; // seconds per km from flat-pace input
+    } else {
+      // nothing provided: abort with no results
+      this.results = null;
+      return;
+    }
+
+    // generate per-km segments (include last partial) by interpolating elevation at each km boundary
     const segments: Array<{ distance: number; elevDelta: number }> = [];
 
-    let segDistRemaining = 1000; // meters to fill current km
-    let segElev = 0;
-    let acc = 0;
+    const totalMetersClamped = Math.max(0, totalMeters);
+    const kmCount = Math.max(1, Math.ceil(totalMetersClamped / 1000));
 
-    for (let i = 1; i < this.points.length; i++) {
-      let segLen = this.points[i].distFromPrev ?? 0;
-      let segEle = (this.points[i].ele ?? 0) - (this.points[i - 1].ele ?? 0);
-
-      while (segLen > 0) {
-        if (segLen >= segDistRemaining) {
-          // take part to finish current km
-          const ratio = segDistRemaining / segLen;
-          segElev += segEle * ratio;
-          segments.push({ distance: (1000 - acc) / 1000, elevDelta: segElev });
-          // prepare next km
-          segLen = segLen - segDistRemaining;
-          segEle = segEle * (1 - ratio);
-          segDistRemaining = 1000;
-          segElev = 0;
-          acc = 0;
-        } else {
-          // consume entire segment but not yet finish km
-          segElev += segEle;
-          segDistRemaining -= segLen;
-          acc += segLen;
-          segLen = 0;
+    // helper: get elevation at an arbitrary distance (meters) along the track by linear interpolation
+    const getElevationAt = (distMeters: number) => {
+      if (distMeters <= 0) return this.points![0].ele ?? 0;
+      if (distMeters >= totalMetersClamped) return this.points![this.points!.length - 1].ele ?? 0;
+      // find segment containing distMeters
+      for (let i = 1; i < this.points!.length; i++) {
+        const prev = this.points![i - 1];
+        const cur = this.points![i];
+        const prevCum = prev.cumDist ?? 0;
+        const curCum = cur.cumDist ?? 0;
+        if (distMeters >= prevCum && distMeters <= curCum) {
+          const segLen = curCum - prevCum;
+          if (segLen <= 0) return cur.ele ?? prev.ele ?? 0;
+          const ratio = (distMeters - prevCum) / segLen;
+          const prevEle = prev.ele ?? 0;
+          const curEle = cur.ele ?? 0;
+          return prevEle + (curEle - prevEle) * ratio;
         }
       }
-    }
+      return this.points![this.points!.length - 1].ele ?? 0;
+    };
 
-    // if there's remaining partial km (acc > 0)
-    const coveredMeters = segments.reduce((s, x) => s + x.distance * 1000, 0);
-    const remainingMeters = Math.max(0, totalMeters - coveredMeters);
-    if (remainingMeters > 0) {
-      // approximate remaining elevation by walking backwards
-      let remElev = 0;
-      let toCollect = remainingMeters;
-      for (let i = this.points.length - 1; i > 0 && toCollect > 0; i--) {
-        const d = this.points[i].distFromPrev ?? 0;
-        const e = (this.points[i].ele ?? 0) - (this.points[i - 1].ele ?? 0);
-        const take = Math.min(d, toCollect);
-        const ratio = d > 0 ? take / d : 0;
-        remElev += e * ratio;
-        toCollect -= take;
-      }
-      segments.push({ distance: remainingMeters / 1000, elevDelta: remElev });
+    for (let k = 0; k < kmCount; k++) {
+      const start = k * 1000;
+      const end = Math.min(totalMetersClamped, (k + 1) * 1000);
+      const distanceMeters = end - start;
+      if (distanceMeters <= 0) continue;
+      const elevStart = getElevationAt(start);
+      const elevEnd = getElevationAt(end);
+      segments.push({ distance: distanceMeters / 1000, elevDelta: elevEnd - elevStart });
     }
-
+    
     // Now compute pace per segment factoring elevation change
-    const elevationFactor = 0.2; // seconds per meter of elevation gain
+    const elevationFactor = this.levels[this.sensitivity]?.factor ?? 0.2; // seconds per meter of elevation gain
 
-    this.results = segments.map((s) => {
+    const mapped = segments.map((s) => {
       const elevMeters = s.elevDelta;
       const adjustment = elevMeters * elevationFactor;
-      const paceForSegmentSeconds = basePaceSeconds * s.distance + adjustment;
-      const pacePerKm = paceForSegmentSeconds / s.distance;
-      return { distance: s.distance, elevDelta: elevMeters, paceSeconds: pacePerKm };
+      const timeForSegmentSeconds = basePaceSeconds * s.distance + adjustment; // total seconds for this segment
+      const isPartial = s.distance < 0.999; // treat <1km as partial
+      const pacePerKm = timeForSegmentSeconds / s.distance; // seconds per km equivalent
+      return { distance: s.distance, elevDelta: elevMeters, paceSeconds: isPartial ? pacePerKm : pacePerKm, isPartial, timeSeconds: timeForSegmentSeconds };
     });
+
+    this.results = mapped;
+    this.totalTimeSeconds = mapped.reduce((a, b) => a + (b.timeSeconds ?? 0), 0);
+    this.totalDistanceKm = mapped.reduce((a, b) => a + (b.distance ?? 0), 0);
+  }
+
+  // parse a pace string like "6:30" or "06:30" or "1:06:30" (hh:mm:ss)
+  private parsePace(input: string): number | null {
+    if (!input) return null;
+    const parts = input.split(':').map((p) => p.trim()).filter(Boolean);
+    if (parts.length === 0) return null;
+    const nums = parts.map((p) => Number(p));
+    if (nums.some((n) => Number.isNaN(n) || n < 0)) return null;
+    if (nums.length === 1) {
+      // seconds only
+      return nums[0];
+    }
+    if (nums.length === 2) {
+      const [m, s] = nums;
+      return m * 60 + s;
+    }
+    if (nums.length === 3) {
+      const [h, m, s] = nums;
+      return h * 3600 + m * 60 + s;
+    }
+    return null;
   }
 
   formatSeconds(sec: number) {
