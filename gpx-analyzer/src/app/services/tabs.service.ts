@@ -23,7 +23,7 @@ export class TabsService {
 
   openTab(name: string, points: TrackPoint[]) {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const tab: TrackTab = { id, name, points, visibleComponents: ['height', 'gradient'] };
+    const tab: TrackTab = { id, name, points, visibleComponents: ['map'] };
     const current = this._tabs.value.slice();
     current.push(tab);
     this._tabs.next(current);

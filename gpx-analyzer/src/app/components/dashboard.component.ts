@@ -5,12 +5,14 @@ import { FileUploadComponent } from './file-upload.component';
 import { HeightChartComponent } from './height-chart.component';
 import { GradientTableComponent } from './gradient-table.component';
 import { TabsComponent } from './tabs.component';
+import { MapComponent } from './map.component';
+import { PaceEstimatorComponent } from './pace-estimator.component';
 import { TabsService } from '../services/tabs.service';
 
 @Component({
   selector: 'app-dashboard',
   standalone: true,
-  imports: [CommonModule, FormsModule, FileUploadComponent, HeightChartComponent, GradientTableComponent, TabsComponent],
+  imports: [CommonModule, FormsModule, FileUploadComponent, HeightChartComponent, GradientTableComponent, TabsComponent, MapComponent, PaceEstimatorComponent],
   template: `
     <div class="dashboard-root">
       <header class="top">
@@ -29,6 +31,8 @@ import { TabsService } from '../services/tabs.service';
           <h3>Components</h3>
           <label class="comp-row"><input type="checkbox" [checked]="isVisible('height')" (change)="toggle('height',$event.target.checked)"/> Height chart</label>
           <label class="comp-row"><input type="checkbox" [checked]="isVisible('gradient')" (change)="toggle('gradient',$event.target.checked)"/> Gradient table</label>
+          <label class="comp-row"><input type="checkbox" [checked]="isVisible('map')" (change)="toggle('map',$event.target.checked)"/> Map</label>
+          <label class="comp-row"><input type="checkbox" [checked]="isVisible('pace')" (change)="toggle('pace',$event.target.checked)"/> Pace estimator</label>
         </aside>
 
         <main class="tiles">
@@ -40,6 +44,8 @@ import { TabsService } from '../services/tabs.service';
                 <ng-container [ngSwitch]="c">
                   <app-height-chart *ngSwitchCase="'height'" [points]="activeTab.points"></app-height-chart>
                   <app-gradient-table *ngSwitchCase="'gradient'" [points]="activeTab.points"></app-gradient-table>
+                  <app-map *ngSwitchCase="'map'" [points]="activeTab.points"></app-map>
+                  <app-pace-estimator *ngSwitchCase="'pace'" [points]="activeTab.points"></app-pace-estimator>
                   <div *ngSwitchDefault>Unknown component</div>
                 </ng-container>
               </div>
@@ -51,8 +57,8 @@ import { TabsService } from '../services/tabs.service';
   `,
   styles: [
     `
-    :host { display:block }
-    .dashboard-root{ display:flex; flex-direction:column; height:100vh; padding:12px; gap:12px }
+    :host { display:block; height:100%; overflow:hidden }
+    .dashboard-root{ display:flex; flex-direction:column; height:100%; padding:12px; gap:12px; overflow:hidden }
     .top{ display:flex; justify-content:space-between; align-items:center }
     h1{ margin:0; font-size:1.25rem }
     app-tabs{ display:block }
@@ -60,10 +66,10 @@ import { TabsService } from '../services/tabs.service';
     .config{ width:220px; background:linear-gradient(180deg,#ffffff,#fbfdff); border-radius:12px; padding:12px; box-shadow:0 6px 24px rgba(20,40,80,0.06) }
     .config h3{ margin-top:0 }
     .comp-row{ display:flex; align-items:center; gap:8px; padding:6px 0 }
-    .tiles{ display:grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap:12px; flex:1; min-height:0 }
-    .tile{ background: linear-gradient(180deg,#fff,#fbfcff); border-radius:12px; padding:10px; box-shadow:0 8px 30px rgba(20,40,80,0.06); border:1px solid rgba(30,60,120,0.06); display:flex; min-height:220px }
+    .tiles{ display:flex; flex-wrap:wrap; gap:12px; flex:1; min-height:0; overflow:auto; align-items:stretch }
+    .tile{ background: linear-gradient(180deg,#fff,#fbfcff); border-radius:12px; padding:10px; box-shadow:0 8px 30px rgba(20,40,80,0.06); border:1px solid rgba(30,60,120,0.06); display:flex; min-height:0; align-self:stretch; flex:1 1 320px }
     .tile-inner{ display:flex; flex-direction:column; flex:1; min-height:0 }
-    .tile app-height-chart, .tile app-gradient-table{ flex:1 1 auto; min-height:0 }
+    .tile app-height-chart, .tile app-gradient-table, .tile app-map{ flex:1 1 auto; min-height:0 }
     .empty{ color:#666; font-style:italic }
     `
   ]

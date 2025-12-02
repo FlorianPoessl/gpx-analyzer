@@ -1,6 +1,7 @@
 <style>
   :host { font-family: Inter, system-ui, Arial; }
-  main { padding: 16px; }
+  /* Make main fill the viewport and include padding in sizing so children using 100% work correctly */
+  main { padding: 16px; box-sizing: border-box; height: 100%; overflow: hidden }
   h1 { margin: 0 0 8px 0 }
 </style>
 
