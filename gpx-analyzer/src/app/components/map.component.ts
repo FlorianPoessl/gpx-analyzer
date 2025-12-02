@@ -1,5 +1,5 @@
 import { Component, AfterViewInit, OnDestroy, OnChanges, SimpleChanges, ViewChild, ElementRef, Input } from '@angular/core';
-import { CommonModule } from '@angular/common';
+import { CommonModule, NgIf } from '@angular/common';
 import * as L from 'leaflet';
 
 // Ensure Leaflet's default marker icon URLs are valid when built by Angular.
@@ -10,24 +10,58 @@ import * as L from 'leaflet';
   shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png'
 });
 import { TrackPoint } from '../services/gpx.service';
+import { FormsModule } from '@angular/forms';
 
 @Component({
   selector: 'app-map',
   standalone: true,
-  imports: [CommonModule],
+  imports: [CommonModule, FormsModule, NgIf],
   template: `
+    <div class="config-bar" *ngIf="points && points.length > 0">
+      <label>
+        <input type="checkbox" [(ngModel)]="showKmMarkers" (ngModelChange)="updatePolyline()">
+        Show km markers
+      </label>
+      <label>
+        <input type="checkbox" [(ngModel)]="showGradient" (ngModelChange)="updatePolyline()">
+        Show gradient
+      </label>
+    </div>
     <div #map class="map-root"></div>
   `,
   styles: [
     `
-    :host{ display:block; height:100% }
+    :host{ display:block; height:100%; position: relative; }
     .map-root{ width:100%; height:100%; min-height:220px; border-radius:8px; overflow:hidden }
+    .config-bar {
+      position: absolute;
+      top: 10px;
+      left: 60px;
+      z-index: 401; /* Above tiles, below popups */
+      background: rgba(255, 255, 255, 0.9);
+      padding: 8px;
+      border-radius: 5px;
+      box-shadow: 0 1px 5px rgba(0,0,0,0.4);
+      display: flex;
+      gap: 15px;
+    }
+    .config-bar label {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-family: sans-serif;
+      font-size: 14px;
+      cursor: pointer;
+    }
     `
   ]
 })
 export class MapComponent implements AfterViewInit, OnDestroy, OnChanges {
   @ViewChild('map', { static: true }) mapEl!: ElementRef<HTMLDivElement>;
   @Input() points: TrackPoint[] | null = null;
+
+  showKmMarkers = false;
+  showGradient = true;
 
   private map: L.Map | null = null;
   private segmentsLayer: L.LayerGroup | null = null;
@@ -66,7 +100,7 @@ export class MapComponent implements AfterViewInit, OnDestroy, OnChanges {
     }
   }
 
-  private updatePolyline() {
+  public updatePolyline() {
     if (!this.points || !this.map || this.points.length < 2) return;
 
     // Create or clear the layer that holds colored segments
@@ -77,17 +111,41 @@ export class MapComponent implements AfterViewInit, OnDestroy, OnChanges {
     }
 
     const bounds = L.latLngBounds([]);
+    let nextKm = 1000; // meters
 
     // Draw each segment with color based on gradient (from previous->current)
     for (let i = 1; i < this.points.length; i++) {
       const a = this.points[i - 1];
       const b = this.points[i];
       const latlngs: L.LatLngExpression[] = [ [a.lat, a.lon], [b.lat, b.lon] ];
-      const g = typeof b.gradient === 'number' ? b.gradient : 0;
-      const color = this.gradientToColor(g);
+      const color = this.showGradient
+        ? this.gradientToColor(typeof b.gradient === 'number' ? b.gradient : 0)
+        : 'red';
       const seg = L.polyline(latlngs, { color, weight: 4, lineCap: 'round' });
       seg.addTo(this.segmentsLayer);
       bounds.extend(latlngs as any);
+
+      // Check for kilometer checkpoints
+      if (this.showKmMarkers) {
+        const prevDist = a.cumDist || 0;
+        const currDist = b.cumDist || 0;
+
+        while (nextKm <= currDist) {
+          if (prevDist < nextKm) {
+            // We crossed a kilometer mark. Interpolate the position.
+            const ratio = (nextKm - prevDist) / (currDist - prevDist);
+            const lat = a.lat + (b.lat - a.lat) * ratio;
+            const lon = a.lon + (b.lon - a.lon) * ratio;
+
+            // Add marker
+            const marker = L.circleMarker([lat, lon], {
+              radius: 4, fillColor: 'black', color: 'black', weight: 1, opacity: 1, fillOpacity: 1
+            });
+            marker.addTo(this.segmentsLayer);
+          }
+          nextKm += 1000;
+        }
+      }
     }
 
     try {
